@@ -206,48 +206,65 @@ var re_extranet_g = /<([^:^>]+:[^:]+):[\d.]+>/g;
 
 var re_extranet_neg = /\(([^:^>]+:[\d.]+)\)/;
 var re_extranet_g_neg = /\(([^:^>]+:[\d.]+)\)/g;
-function tryToRemoveExtraNetworkFromPrompt(textarea, text, isNeg) {
-    var m = text.match(isNeg ? re_extranet_neg : re_extranet);
-    var replaced = false;
-    var newTextareaText;
-    var extraTextBeforeNet = opts.extra_networks_add_text_separator;
-    if (m) {
-        var extraTextAfterNet = m[2];
-        var partToSearch = m[1];
-        var foundAtPosition = -1;
-        newTextareaText = textarea.value.replaceAll(isNeg ? re_extranet_g_neg : re_extranet_g, function(found, net, pos) {
-            m = found.match(isNeg ? re_extranet_neg : re_extranet);
-            if (m[1] == partToSearch) {
-                replaced = true;
-                foundAtPosition = pos;
-                return "";
-            }
-            return found;
-        });
-        if (foundAtPosition >= 0) {
-            if (extraTextAfterNet && newTextareaText.substr(foundAtPosition, extraTextAfterNet.length) == extraTextAfterNet) {
-                newTextareaText = newTextareaText.substr(0, foundAtPosition) + newTextareaText.substr(foundAtPosition + extraTextAfterNet.length);
-            }
-            if (newTextareaText.substr(foundAtPosition - extraTextBeforeNet.length, extraTextBeforeNet.length) == extraTextBeforeNet) {
-                newTextareaText = newTextareaText.substr(0, foundAtPosition - extraTextBeforeNet.length) + newTextareaText.substr(foundAtPosition);
-            }
-        }
-    } else {
-        newTextareaText = textarea.value.replaceAll(new RegExp(`((?:${extraTextBeforeNet})?${text})`, "g"), "");
-        replaced = (newTextareaText != textarea.value);
-    }
 
-    if (replaced) {
-        textarea.value = newTextareaText;
-        return true;
-    }
+function tryToRemoveExtraNetworkFromPrompt(textArea, loraTexts) {
+	var replaced = 0;
+	var expected = loraTexts.length;
+	var newText = textArea.value;
+
+	loraTexts.forEach((text) => {
+		if (text != '' && text != ' ') {
+			nText = newText.replace(text, '');
+			if (nText != newText) {
+				replaced += 1;
+				newText = nText;
+			}
+		}
+		else {
+			expected -= 1;
+		}
+	});
+	
+	if (replaced > 0 && replaced == expected) {
+		textArea.value = newText;
+		return true;
+	}
 
     return false;
 }
 
-function updatePromptArea(text, textArea, isNeg) {
-    if (!tryToRemoveExtraNetworkFromPrompt(textArea, text, isNeg)) {
-        textArea.value = textArea.value + opts.extra_networks_add_text_separator + text;
+function updatePromptArea(text, textArea) {
+	text = text.trim();
+	lora = text.match(/<lora:.+>/);
+	if (lora == null) {
+		lora = '';
+	}
+	else {
+		text = text.replace(lora, '');
+	}
+
+	splitText = text.split('~');
+	currentPrompt = textArea.value;
+	
+	if (splitText.length == 1) {		//	write to end only
+		start  = '';
+		middle = '';
+		end    = opts.extra_networks_add_text_separator + splitText[0];
+	}
+	else if (splitText.length == 2) {	//	write to start and end
+		start  = splitText[0] + opts.extra_networks_add_text_separator;
+		middle = '';
+		end    = opts.extra_networks_add_text_separator + splitText[1];
+	}
+	else if (splitText.length >= 3) {	//	write to start, cursor position and end
+		start  = splitText[0] + opts.extra_networks_add_text_separator;
+		middle = opts.extra_networks_add_text_separator + splitText[1] + opts.extra_networks_add_text_separator;
+		end    = opts.extra_networks_add_text_separator + splitText[2];
+	}
+	
+    if (!tryToRemoveExtraNetworkFromPrompt(textArea, [lora, start, middle, end])) {
+		const startPos = textArea.selectionStart;
+		textArea.value = lora + start + currentPrompt.substring(0, startPos) + middle + currentPrompt.substring(startPos) + end;
     }
 
     updateInput(textArea);
