@@ -756,7 +756,7 @@ def create_ui(interface: gr.Blocks, unrelated_tabs, tabname):
     related_tabs = []
 
     for page in ui.stored_extra_pages:
-        with gr.Tab(page.title, elem_id=f"{tabname}_{page.extra_networks_tabname}", elem_classes=["extra-page"]) as tab:
+        with gr.Tab(page.title, id=f"{tabname}_{page.extra_networks_tabname}", elem_id=f"{tabname}_{page.extra_networks_tabname}", elem_classes=["extra-page"]) as tab:
             with gr.Column(elem_id=f"{tabname}_{page.extra_networks_tabname}_prompts", elem_classes=["extra-page-prompts"]):
                 pass
 
