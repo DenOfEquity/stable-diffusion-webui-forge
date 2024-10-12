@@ -149,7 +149,7 @@ class UiSettings:
                             current_tab.__exit__()
 
                         gr.Group()
-                        current_tab = gr.TabItem(elem_id=f"settings_{elem_id}", label=text)
+                        current_tab = gr.TabItem(id=f"settings_{elem_id}", elem_id=f"settings_{elem_id}", label=text)
                         current_tab.__enter__()
                         current_row = gr.Column(elem_id=f"column_settings_{elem_id}", variant='compact')
                         current_row.__enter__()
