@@ -12,7 +12,7 @@ from backend.sampling.condition import Condition, compile_conditions, compile_we
 from backend.operations import cleanup_cache
 from backend.args import dynamic_args, args
 from backend import utils
-
+from modules.shared import opts
 
 def get_area_and_mult(conds, x_in, timestep_in):
     area = (x_in.shape[2], x_in.shape[3], 0, 0)
@@ -390,6 +390,12 @@ def sampling_prepare(unet, x):
         utils.nested_move_to_device(unet.lora_patches, device=unet.current_device, dtype=unet.model.computation_dtype)
 
     real_model = unet.model
+
+    selected_prediction_type = getattr(opts, 'prediction_type', 'default')
+    if selected_prediction_type == "default":
+        real_model.predictor.prediction_type = real_model.predictor.default_prediction_type
+    else:
+        real_model.predictor.prediction_type = selected_prediction_type
 
     percent_to_timestep_function = lambda p: real_model.predictor.percent_to_sigma(p)
 
