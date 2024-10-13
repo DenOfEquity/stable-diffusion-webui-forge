@@ -50,6 +50,7 @@ class AbstractPrediction(torch.nn.Module):
         super().__init__()
         self.sigma_data = sigma_data
         self.prediction_type = prediction_type
+        self.default_prediction_type = prediction_type # backup as self.prediction_type may be overwritten later
         assert self.prediction_type in ['epsilon', 'const', 'v_prediction', 'edm']
 
     def calculate_input(self, sigma, noise):
