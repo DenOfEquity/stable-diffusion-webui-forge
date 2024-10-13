@@ -390,6 +390,7 @@ options_templates.update(options_section(('ui', "Live previews", "ui"), {
 }))
 
 options_templates.update(options_section(('sampler-params', "Sampler parameters", "sd"), {
+    "prediction_type": OptionInfo("default", "Set model prediction type", gr.Dropdown, {"choices": ["default", "epsilon", "const", "v_prediction", "edm"]}),
     "hide_samplers": OptionInfo([], "Hide samplers in user interface", gr.CheckboxGroup, lambda: {"choices": [x.name for x in shared_items.list_samplers()]}).needs_reload_ui(),
     "eta_ddim": OptionInfo(0.0, "Eta for DDIM", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}, infotext='Eta DDIM').info("noise multiplier; higher = more unpredictable results"),
     "eta_ancestral": OptionInfo(1.0, "Eta for k-diffusion samplers", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.01}, infotext='Eta').info("noise multiplier; currently only applies to ancestral samplers (i.e. Euler a) and SDE samplers"),
