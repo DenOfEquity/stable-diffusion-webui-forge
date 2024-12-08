@@ -1505,20 +1505,11 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
         with devices.autocast():
             self.calculate_hr_conds()
 
-        if self.scripts is not None:
-            self.scripts.before_hr(self)
-            self.scripts.process_before_every_sampling(
-                p=self,
-                x=samples,
-                noise=noise,
-                c=self.hr_c,
-                uc=self.hr_uc,
-            )
-
         self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
         apply_token_merging(self.sd_model, self.get_token_merging_ratio(for_hr=True))
 
         if self.scripts is not None:
+            self.scripts.before_hr(self)
             self.scripts.process_before_every_sampling(self,
                                                        x=samples,
                                                        noise=noise,
