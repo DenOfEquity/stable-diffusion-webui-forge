@@ -8,7 +8,6 @@ from backend import memory_management, stream
 from backend.args import dynamic_args
 from modules.shared import cmd_opts
 
-
 total_vram = int(memory_management.total_vram)
 
 ui_forge_preset: gr.Radio = None
@@ -121,7 +120,7 @@ def make_checkpoint_manager_ui():
     ui_clip_skip = gr.Slider(label="Clip skip", value=lambda: shared.opts.CLIP_stop_at_last_layers, **{"minimum": 1, "maximum": 12, "step": 1})
     bind_to_opts(ui_clip_skip, 'CLIP_stop_at_last_layers', save=True)
 
-    ui_checkpoint.change(checkpoint_change, inputs=[ui_checkpoint], show_progress=False)
+    ui_checkpoint.change(checkpoint_change_ui, inputs=[ui_checkpoint, ui_vae], outputs=[ui_vae], show_progress=False)
     ui_vae.change(modules_change, inputs=[ui_vae], queue=False, show_progress=False)
 
     return
@@ -239,6 +238,40 @@ def refresh_model_loading_parameters():
     return
 
 
+
+def checkpoint_change_ui(ckpt_name:str, vae_te:list):
+    result = vae_te
+    
+    new_ckpt_info = sd_models.get_closet_checkpoint_match(ckpt_name)
+    current_ckpt_info = sd_models.get_closet_checkpoint_match(shared.opts.data.get('sd_model_checkpoint', ''))
+    if new_ckpt_info != current_ckpt_info:
+        if shared.opts.sd_vae_overrides_per_model_preferences:
+            from modules import extra_networks
+
+            metadata = extra_networks.get_user_metadata(new_ckpt_info.filename)
+            vae_metadata = metadata.get("vae_te", None)
+            if vae_metadata is None:
+                vae_metadata = metadata.get("vae", None)
+
+            if vae_metadata is not None:
+                if isinstance(vae_metadata, str):
+                    vae_metadata = [vae_metadata]
+
+                if "Built in" in vae_metadata:  # this means use models built in to checkpoint, so clear the selection
+                    vae_metadata = []
+
+                if vae_metadata != ['']:        # ['']  means 'no change', keep whatever is already set
+                    modules_change(vae_metadata, save=False, refresh=False)
+                    result = vae_metadata
+
+        shared.opts.set('sd_model_checkpoint', ckpt_name)
+
+        shared.opts.save(shared.config_filename)
+        refresh_model_loading_parameters()
+
+    return result
+    
+
 def checkpoint_change(ckpt_name:str, save=True, refresh=True):
     """ checkpoint name can be a number of valid aliases. Returns True if checkpoint changed. """
     new_ckpt_info = sd_models.get_closet_checkpoint_match(ckpt_name)
@@ -339,9 +372,9 @@ def on_preset_change(preset=None):
 
     if shared.opts.forge_preset == 'sd':
         return [
-            gr.update(visible=True),                                                    # ui_vae
+            gr.update(visible=True, value=getattr(shared.opts, "sd_vae_te", [""])),     # ui_vae
             gr.update(visible=True, value=1),                                           # ui_clip_skip
-            gr.update(visible=False, value='Automatic'),                                # ui_forge_unet_storage_dtype_options
+            gr.update(visible=True, value='Automatic'),                                 # ui_forge_unet_storage_dtype_options
             gr.update(visible=False, value='Queue'),                                    # ui_forge_async_loading
             gr.update(visible=False, value='CPU'),                                      # ui_forge_pin_shared_memory
             gr.update(visible=False, value=total_vram - 1024),                          # ui_forge_inference_memory
@@ -366,9 +399,9 @@ def on_preset_change(preset=None):
         if model_mem < 0 or model_mem > total_vram:
             model_mem = total_vram - 1024
         return [
-            gr.update(visible=True),                                                    # ui_vae
+            gr.update(visible=True, value=getattr(shared.opts, "xl_vae_te", [""])),     # ui_vae
             gr.update(visible=False, value=1),                                          # ui_clip_skip
-            gr.update(visible=True, value='Automatic'),                                 # ui_forge_unet_storage_dtype_options
+            gr.update(visible=True, value=getattr(shared.opts, "xl_unet_dtype", 'Automatic')), # ui_forge_unet_storage_dtype_options
             gr.update(visible=False, value='Queue'),                                    # ui_forge_async_loading
             gr.update(visible=False, value='CPU'),                                      # ui_forge_pin_shared_memory
             gr.update(visible=True, value=model_mem),                                   # ui_forge_inference_memory
@@ -393,9 +426,9 @@ def on_preset_change(preset=None):
         if model_mem < 0 or model_mem > total_vram:
             model_mem = total_vram - 1024
         return [
-            gr.update(visible=True),                                                    # ui_vae
+            gr.update(visible=True, value=getattr(shared.opts, "flux_vae_te", [""])),   # ui_vae
             gr.update(visible=False, value=1),                                          # ui_clip_skip
-            gr.update(visible=True, value='Automatic'),                                 # ui_forge_unet_storage_dtype_options
+            gr.update(visible=True, value=getattr(shared.opts, "flux_unet_dtype", 'Automatic')), # ui_forge_unet_storage_dtype_options
             gr.update(visible=True, value='Queue'),                                     # ui_forge_async_loading
             gr.update(visible=True, value='CPU'),                                       # ui_forge_pin_shared_memory
             gr.update(visible=True, value=model_mem),                                   # ui_forge_inference_memory
@@ -449,6 +482,7 @@ shared.options_templates.update(shared.options_section(('ui_sd', "UI defaults 's
     "sd_i2i_width":  shared.OptionInfo(512,  "img2img width",      gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
     "sd_i2i_height": shared.OptionInfo(512,  "img2img height",     gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
     "sd_i2i_cfg":    shared.OptionInfo(7,    "img2img CFG",        gr.Slider, {"minimum": 1,  "maximum": 30,   "step": 0.1}),
+    "sd_vae_te":     shared.OptionInfo([""], "VAE / Text Encoder", gr.Dropdown,{"multiselect": True, "choices": list(module_list.keys())}),
 }))
 shared.options_templates.update(shared.options_section(('ui_xl', "UI defaults 'xl'", "ui"), {
     "xl_t2i_width":  shared.OptionInfo(896,  "txt2img width",      gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
@@ -459,6 +493,8 @@ shared.options_templates.update(shared.options_section(('ui_xl', "UI defaults 'x
     "xl_i2i_height": shared.OptionInfo(1024, "img2img height",     gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
     "xl_i2i_cfg":    shared.OptionInfo(5,    "img2img CFG",        gr.Slider, {"minimum": 1,  "maximum": 30,   "step": 0.1}),
     "xl_GPU_MB":     shared.OptionInfo(total_vram - 1024, "GPU Weights (MB)", gr.Slider, {"minimum": 0,  "maximum": total_vram,   "step": 1}),
+    "xl_vae_te":     shared.OptionInfo([""], "VAE / Text Encoder", gr.Dropdown,{"multiselect": True, "choices": list(module_list.keys())}),
+    "xl_unet_dtype": shared.OptionInfo("Automatic", "Diffusion in Low Bits", gr.Dropdown, {"choices": list(forge_unet_storage_dtype_options.keys())}),
 }))
 shared.options_templates.update(shared.options_section(('ui_flux', "UI defaults 'flux'", "ui"), {
     "flux_t2i_width":    shared.OptionInfo(896,  "txt2img width",                gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
@@ -472,4 +508,6 @@ shared.options_templates.update(shared.options_section(('ui_flux', "UI defaults 
     "flux_i2i_cfg":      shared.OptionInfo(1,    "img2img CFG",                  gr.Slider, {"minimum": 1,  "maximum": 30,   "step": 0.1}),
     "flux_i2i_d_cfg":    shared.OptionInfo(3.5,  "img2img Distilled CFG",        gr.Slider, {"minimum": 0,  "maximum": 30,   "step": 0.1}),
     "flux_GPU_MB":       shared.OptionInfo(total_vram - 1024, "GPU Weights (MB)",gr.Slider, {"minimum": 0,  "maximum": total_vram,   "step": 1}),
+    "flux_vae_te":       shared.OptionInfo([""], "VAE / Text Encoder", gr.Dropdown,{"multiselect": True, "choices": list(module_list.keys())}),
+    "flux_unet_dtype":   shared.OptionInfo("Automatic", "Diffusion in Low Bits", gr.Dropdown, {"choices": list(forge_unet_storage_dtype_options.keys())}),
 }))
