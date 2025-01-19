@@ -374,7 +374,7 @@ def on_preset_change(preset=None):
         return [
             gr.update(visible=True, value=getattr(shared.opts, "sd_vae_te", [""])),     # ui_vae
             gr.update(visible=True, value=1),                                           # ui_clip_skip
-            gr.update(visible=True, value='Automatic'),                                 # ui_forge_unet_storage_dtype_options
+            gr.update(visible=False, value='Automatic'),                                # ui_forge_unet_storage_dtype_options
             gr.update(visible=False, value='Queue'),                                    # ui_forge_async_loading
             gr.update(visible=False, value='CPU'),                                      # ui_forge_pin_shared_memory
             gr.update(visible=False, value=total_vram - 1024),                          # ui_forge_inference_memory
