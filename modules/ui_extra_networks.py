@@ -214,13 +214,6 @@ class ExtraNetworksPage:
         desc = metadata.get("description", None)
         if desc is not None:
             item["description"] = desc
-        vae = metadata.get('vae_te', None)
-        if vae is None:     # fallback to old type
-            vae = metadata.get("vae", None)
-        if vae is not None:
-            if isinstance(vae, str):
-                vae = [vae]
-            item["vae"] = vae
         version = metadata.get("sd_version_str", None)
         if version is not None:
             item["sd_version_str"] = version
@@ -279,9 +272,6 @@ class ExtraNetworksPage:
                 }
             )
             onclick = html.escape(onclick)
-        else:                   #   this path is 'Checkpoints'
-            vae = item.get("vae", [])
-            onclick = html.escape(f"selectVAE({vae});") + onclick
 
         btn_copy_path = self.btn_copy_path_tpl.format(**{"filename": item["filename"]})
         btn_metadata = ""
