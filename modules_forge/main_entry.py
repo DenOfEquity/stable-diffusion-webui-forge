@@ -52,80 +52,6 @@ def bind_to_opts(comp, k, save=False, callback=None):
     return
 
 
-def make_checkpoint_manager_ui():
-    global ui_checkpoint, ui_vae, ui_clip_skip, ui_forge_unet_storage_dtype_options, ui_forge_async_loading, ui_forge_pin_shared_memory, ui_forge_inference_memory, ui_forge_preset
-
-    if shared.opts.sd_model_checkpoint in [None, 'None', 'none', '']:
-        if len(sd_models.checkpoints_list) == 0:
-            sd_models.list_models()
-        if len(sd_models.checkpoints_list) > 0:
-            shared.opts.set('sd_model_checkpoint', next(iter(sd_models.checkpoints_list.values())).name)
-
-    ui_forge_preset = gr.Radio(label="UI", value=lambda: shared.opts.forge_preset, choices=['sd', 'xl', 'flux', 'all'], elem_id="forge_ui_preset")
-
-    ckpt_list, vae_list = refresh_models()
-
-    ui_checkpoint = gr.Dropdown(
-        value=lambda: shared.opts.sd_model_checkpoint,
-        label="Checkpoint",
-        elem_classes=['model_selection'],
-        choices=ckpt_list
-    )
-
-    ui_vae = gr.Dropdown(
-        value=lambda: [os.path.basename(x) for x in shared.opts.forge_additional_modules],
-        multiselect=True,
-        label="VAE / Text Encoder",
-        render=False,
-        choices=vae_list
-    )
-
-    def gr_refresh_models():
-        a, b = refresh_models()
-        return gr.update(choices=a), gr.update(choices=b)
-
-    refresh_button = ui_common.ToolButton(value=ui_common.refresh_symbol, elem_id=f"forge_refresh_checkpoint", tooltip="Refresh")
-    refresh_button.click(
-        fn=gr_refresh_models,
-        inputs=[],
-        outputs=[ui_checkpoint, ui_vae],
-        show_progress=False,
-        queue=False
-    )
-    Context.root_block.load(
-        fn=gr_refresh_models,
-        inputs=[],
-        outputs=[ui_checkpoint, ui_vae],
-        show_progress=False,
-        queue=False
-    )
-
-    ui_vae.render()
-
-    ui_forge_unet_storage_dtype_options = gr.Dropdown(label="Diffusion in Low Bits", value=lambda: shared.opts.forge_unet_storage_dtype, choices=list(forge_unet_storage_dtype_options.keys()))
-    bind_to_opts(ui_forge_unet_storage_dtype_options, 'forge_unet_storage_dtype', save=True, callback=refresh_model_loading_parameters)
-
-    ui_forge_async_loading = gr.Radio(label="Swap Method", value=lambda: shared.opts.forge_async_loading, choices=['Queue', 'Async'])
-    ui_forge_pin_shared_memory = gr.Radio(label="Swap Location", value=lambda: shared.opts.forge_pin_shared_memory, choices=['CPU', 'Shared'])
-    ui_forge_inference_memory = gr.Slider(label="GPU Weights (MB)", value=lambda: total_vram - shared.opts.forge_inference_memory, minimum=0, maximum=int(memory_management.total_vram), step=1)
-
-    mem_comps = [ui_forge_inference_memory, ui_forge_async_loading, ui_forge_pin_shared_memory]
-
-    ui_forge_inference_memory.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
-    ui_forge_async_loading.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
-    ui_forge_pin_shared_memory.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
-
-    Context.root_block.load(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
-
-    ui_clip_skip = gr.Slider(label="Clip skip", value=lambda: shared.opts.CLIP_stop_at_last_layers, **{"minimum": 1, "maximum": 12, "step": 1})
-    bind_to_opts(ui_clip_skip, 'CLIP_stop_at_last_layers', save=True)
-
-    ui_checkpoint.change(checkpoint_change_ui, inputs=[ui_checkpoint, ui_vae], outputs=[ui_vae], show_progress=False)
-    ui_vae.change(modules_change, inputs=[ui_vae], queue=False, show_progress=False)
-
-    return
-
-
 def find_files_with_extensions(base_path, extensions):
     found_files = {}
     for root, _, files in os.walk(base_path):
@@ -161,6 +87,70 @@ def refresh_models():
         module_list.update(vae_files)
 
     return ckpt_list, module_list.keys()
+
+ckpt_list, _ = refresh_models()
+
+
+def make_checkpoint_manager_ui():
+    global ui_checkpoint, ui_vae, ui_clip_skip, ui_forge_unet_storage_dtype_options, ui_forge_async_loading, ui_forge_pin_shared_memory, ui_forge_inference_memory, ui_forge_preset, ckpt_list
+
+    if shared.opts.sd_model_checkpoint in [None, 'None', 'none', '']:
+        if len(sd_models.checkpoints_list) == 0:
+            sd_models.list_models()
+        if len(sd_models.checkpoints_list) > 0:
+            shared.opts.set('sd_model_checkpoint', next(iter(sd_models.checkpoints_list.values())).name)
+
+    ui_forge_preset = gr.Radio(label="UI", value=shared.opts.forge_preset, choices=['sd', 'xl', 'flux', 'all'], elem_id="forge_ui_preset")
+
+    ui_checkpoint = gr.Dropdown(
+        value=lambda: shared.opts.sd_model_checkpoint,
+        label="Checkpoint",
+        elem_classes=['model_selection'],
+        choices=ckpt_list
+    )
+
+    ui_vae = gr.Dropdown(
+        value=lambda: [os.path.basename(x) for x in shared.opts.forge_additional_modules],
+        multiselect=True,
+        label="VAE / Text Encoder",
+        choices=list(module_list.keys())
+    )
+
+    def gr_refresh_models():
+        a, b = refresh_models()
+        return gr.update(choices=a), gr.update(choices=b)
+
+    refresh_button = ui_common.ToolButton(value=ui_common.refresh_symbol, elem_id=f"forge_refresh_checkpoint", tooltip="Refresh")
+    refresh_button.click(
+        fn=gr_refresh_models,
+        inputs=None,
+        outputs=[ui_checkpoint, ui_vae],
+        show_progress=False,
+        queue=False
+    )
+
+    ui_forge_unet_storage_dtype_options = gr.Dropdown(label="Diffusion in Low Bits", value=lambda: shared.opts.forge_unet_storage_dtype, choices=list(forge_unet_storage_dtype_options.keys()))
+    bind_to_opts(ui_forge_unet_storage_dtype_options, 'forge_unet_storage_dtype', save=True, callback=refresh_model_loading_parameters)
+
+    ui_forge_async_loading = gr.Radio(label="Swap Method", value=lambda: shared.opts.forge_async_loading, choices=['Queue', 'Async'])
+    ui_forge_pin_shared_memory = gr.Radio(label="Swap Location", value=lambda: shared.opts.forge_pin_shared_memory, choices=['CPU', 'Shared'])
+    ui_forge_inference_memory = gr.Slider(label="GPU Weights (MB)", value=lambda: total_vram - shared.opts.forge_inference_memory, minimum=0, maximum=int(memory_management.total_vram), step=1)
+
+    mem_comps = [ui_forge_inference_memory, ui_forge_async_loading, ui_forge_pin_shared_memory]
+
+    ui_forge_inference_memory.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
+    ui_forge_async_loading.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
+    ui_forge_pin_shared_memory.change(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
+
+    Context.root_block.load(ui_refresh_memory_management_settings, inputs=mem_comps, queue=False, show_progress=False)
+
+    ui_clip_skip = gr.Slider(label="Clip skip", value=lambda: shared.opts.CLIP_stop_at_last_layers, **{"minimum": 1, "maximum": 12, "step": 1})
+    bind_to_opts(ui_clip_skip, 'CLIP_stop_at_last_layers', save=True)
+
+    ui_checkpoint.change(checkpoint_change_ui, inputs=[ui_checkpoint, ui_vae], outputs=[ui_vae], show_progress=False)
+    ui_vae.change(modules_change, inputs=[ui_vae], queue=False, show_progress=False)
+
+    return
 
 
 def ui_refresh_memory_management_settings(model_memory, async_loading, pin_shared_memory):
@@ -359,7 +349,7 @@ def forge_main_entry():
 
     ui_forge_preset.change(on_preset_change, inputs=[ui_forge_preset], outputs=output_targets, queue=False, show_progress=False)
     ui_forge_preset.change(js="clickLoraRefresh", fn=None, queue=False, show_progress=False)
-    Context.root_block.load(on_preset_change, inputs=None, outputs=output_targets, queue=False, show_progress=False)
+    Context.root_block.load(on_preset_change, inputs=[ui_forge_preset], outputs=output_targets, queue=False, show_progress=False)
 
     refresh_model_loading_parameters()
     return
@@ -374,7 +364,7 @@ def on_preset_change(preset=None):
         return [
             gr.update(visible=True, value=getattr(shared.opts, "sd_vae_te", [""])),     # ui_vae
             gr.update(visible=True, value=1),                                           # ui_clip_skip
-            gr.update(visible=False, value='Automatic'),                                # ui_forge_unet_storage_dtype_options
+            gr.update(visible=True, value=getattr(shared.opts, "sd_unet_dtype", 'Automatic')), # ui_forge_unet_storage_dtype_options
             gr.update(visible=False, value='Queue'),                                    # ui_forge_async_loading
             gr.update(visible=False, value='CPU'),                                      # ui_forge_pin_shared_memory
             gr.update(visible=False, value=total_vram - 1024),                          # ui_forge_inference_memory
@@ -483,6 +473,7 @@ shared.options_templates.update(shared.options_section(('ui_sd', "UI defaults 's
     "sd_i2i_height": shared.OptionInfo(512,  "img2img height",     gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
     "sd_i2i_cfg":    shared.OptionInfo(7,    "img2img CFG",        gr.Slider, {"minimum": 1,  "maximum": 30,   "step": 0.1}),
     "sd_vae_te":     shared.OptionInfo([""], "VAE / Text Encoder", gr.Dropdown,{"multiselect": True, "choices": list(module_list.keys())}),
+    "sd_unet_dtype": shared.OptionInfo("Automatic", "Diffusion in Low Bits", gr.Dropdown, {"choices": list(forge_unet_storage_dtype_options.keys())}),
 }))
 shared.options_templates.update(shared.options_section(('ui_xl', "UI defaults 'xl'", "ui"), {
     "xl_t2i_width":  shared.OptionInfo(896,  "txt2img width",      gr.Slider, {"minimum": 64, "maximum": 2048, "step": 8}),
@@ -511,3 +502,4 @@ shared.options_templates.update(shared.options_section(('ui_flux', "UI defaults 
     "flux_vae_te":       shared.OptionInfo([""], "VAE / Text Encoder", gr.Dropdown,{"multiselect": True, "choices": list(module_list.keys())}),
     "flux_unet_dtype":   shared.OptionInfo("Automatic", "Diffusion in Low Bits", gr.Dropdown, {"choices": list(forge_unet_storage_dtype_options.keys())}),
 }))
+
