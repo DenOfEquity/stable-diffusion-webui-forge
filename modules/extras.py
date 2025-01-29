@@ -7,10 +7,11 @@ import json
 import torch
 import tqdm
 
-from modules import shared, images, sd_models, sd_vae, sd_models_config, errors
+from modules import shared, images, sd_models, sd_vae, sd_models_config, errors, paths
 from modules.ui_common import plaintext_to_html
 import gradio as gr
 import safetensors.torch
+from modules_forge.main_entry import module_list, refresh_models
 
 
 def run_pnginfo(image):
@@ -64,18 +65,22 @@ def create_config(ckpt_result, config_source, a, b, c):
 
 checkpoint_dict_skip_on_merge = ["cond_stage_model.transformer.text_model.embeddings.position_ids"]
 
+def to_bfloat16(tensor):
+    return tensor.to(torch.bfloat16)
 
-def to_half(tensor, enable):
-    if enable and tensor.dtype == torch.float:
-        return tensor.half()
+def to_float16(tensor):
+    return tensor.to(torch.float16)
 
-    return tensor
+def to_fp8e4m3(tensor):
+    return tensor.to(torch.float8_e4m3fn)
 
+def to_fp8e5m2(tensor):
+    return tensor.to(torch.float8_e5m2)
 
-def read_metadata(primary_model_name, secondary_model_name, tertiary_model_name):
+def read_metadata(model_names):
     metadata = {}
 
-    for checkpoint_name in [primary_model_name, secondary_model_name, tertiary_model_name]:
+    for checkpoint_name in [model_names]:
         checkpoint_info = sd_models.checkpoints_list.get(checkpoint_name, None)
         if checkpoint_info is None:
             continue
@@ -85,8 +90,15 @@ def read_metadata(primary_model_name, secondary_model_name, tertiary_model_name)
     return json.dumps(metadata, indent=4, ensure_ascii=False)
 
 
-def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_model_name, interp_method, multiplier, save_as_half, custom_name, checkpoint_format, config_source, bake_in_vae, discard_weights, save_metadata, add_merge_recipe, copy_metadata_fields, metadata_json):
+def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, save_v, save_t, calc_fp32, custom_name, config_source, bake_in_vae, bake_in_te, discard_weights, save_metadata, add_merge_recipe, copy_metadata_fields, metadata_json):
     shared.state.begin(job="model-merge")
+
+    if len(model_names) > 2:
+        tertiary_model_name = model_names[2]
+    if len(model_names) > 1:
+        secondary_model_name = model_names[1]
+    primary_model_name = model_names[0]
+
 
     def fail(message):
         shared.state.textinfo = message
@@ -101,6 +113,9 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
 
     def add_difference(theta0, theta1_2_diff, alpha):
         return theta0 + (alpha * theta1_2_diff)
+
+    def filename_nothing(): # avoid overwrite original checkpoint
+        return "[]" + primary_model_info.model_name
 
     def filename_weighted_sum():
         a = primary_model_info.model_name
@@ -118,13 +133,22 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
 
         return f"{a} + {M}({b} - {c})"
 
-    def filename_nothing():
-        return primary_model_info.model_name
+    def filename_unet():
+        return "[UNET]-" + primary_model_info.model_name
+
+    def filename_vae():
+        return "[VAE]-" + primary_model_info.model_name
+
+    def filename_te():
+        return "[TE]-" + primary_model_info.model_name
 
     theta_funcs = {
+        "None": (filename_nothing, None, None),
         "Weighted sum": (filename_weighted_sum, None, weighted_sum),
         "Add difference": (filename_add_difference, get_difference, add_difference),
-        "No interpolation": (filename_nothing, None, None),
+        "Extract Unet": (filename_unet, None, None),
+        "Extract VAE": (filename_vae, None, None),
+        "Extract Text encoder(s)" : (filename_te, None, None),
     }
     filename_generator, theta_func1, theta_func2 = theta_funcs[interp_method]
     shared.state.job_count = (1 if theta_func1 else 0) + (1 if theta_func2 else 0)
@@ -147,17 +171,63 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
     result_is_inpainting_model = False
     result_is_instruct_pix2pix_model = False
 
+    def load_model (filename, message):
+        shared.state.textinfo = f"Loading {message}: {filename} ..."
+
+        theta = sd_models.load_torch_file(filename)
+
+        #   strip unwanted keys immediately - reduce memory use and processing
+
+        strip = 0
+        if (save_t == "None (remove)" or interp_method == "Extract Unet" or interp_method == "Extract VAE") and "Built in (A)" not in bake_in_te:
+            strip += 1
+        if (save_v == "None (remove)" or interp_method == "Extract Unet" or interp_method == "Extract Text encoder(s)") and bake_in_vae != "Built in (A)":
+            strip += 2
+        if save_u == "None (remove)" or interp_method == "Extract VAE" or interp_method == "Extract Text encoder(s)":
+            strip += 4
+            
+        match strip:
+            case 1:
+                regex = re.compile(r'\b(text_model|conditioner\.embedders)\.\b')
+            case 2:
+                regex = re.compile(r'\b(first_stage_model|vae)\.\b')
+            case 3:
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|first_stage_model|vae)\.\b')
+            case 4:
+                regex = re.compile(r'\b(model\.diffusion_model)\.\b')
+            case 5:
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|model\.diffusion_model)\.\b')
+            case 6:
+                regex = re.compile(r'\b(first_stage_model|vae|model\.diffusion_model)\.\b')
+            case 7:
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|first_stage_model|vae|model\.diffusion_model)\.\b')
+            case _:
+                pass
+
+        if strip > 0:
+            for key in list(theta):
+                if re.search(regex, key):
+                    theta.pop(key, None)
+
+        if discard_weights:
+            regex = re.compile(discard_weights)
+            for key in list(theta):
+                if re.search(regex, key):
+                    theta.pop(key, None)
+
+        if calc_fp32:
+            for k,v in theta.items():
+                theta[k] = v.to(torch.float32)
+
+        return theta
+
     if theta_func2:
-        shared.state.textinfo = "Loading B"
-        print(f"Loading {secondary_model_info.filename}...")
-        theta_1 = sd_models.load_torch_file(secondary_model_info.filename)
+        theta_1 = load_model(secondary_model_info.filename, "B")
     else:
         theta_1 = None
 
     if theta_func1:
-        shared.state.textinfo = "Loading C"
-        print(f"Loading {tertiary_model_info.filename}...")
-        theta_2 = sd_models.load_torch_file(tertiary_model_info.filename)
+        theta_2 = load_model(tertiary_model_info.filename, "C")
 
         shared.state.textinfo = 'Merging B and C'
         shared.state.sampling_steps = len(theta_1.keys())
@@ -177,82 +247,145 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
 
         shared.state.nextjob()
 
-    shared.state.textinfo = f"Loading {primary_model_info.filename}..."
-    print(f"Loading {primary_model_info.filename}...")
-    theta_0 = sd_models.load_torch_file(primary_model_info.filename)
+    theta_0 = load_model(primary_model_info.filename, "A")
 
-    print("Merging...")
-    shared.state.textinfo = 'Merging A and B'
-    shared.state.sampling_steps = len(theta_0.keys())
-    for key in tqdm.tqdm(theta_0.keys()):
-        if theta_1 and 'model' in key and key in theta_1:
+    if "Extract" in interp_method:
+        filename = filename_generator() if custom_name == '' else custom_name
+        filename += ".safetensors"
 
-            if key in checkpoint_dict_skip_on_merge:
-                continue
+# should these paths be hardcoded?
+        if interp_method == "Extract Text encoder(s)":
+            type = "Text encoder(s)"
+            te_dir = os.path.abspath(os.path.join(paths.models_path, "text_encoder"))
+            output_modelname = os.path.join(te_dir, filename)
+        elif interp_method == "Extract VAE":
+            type = "VAE"
+            vae_dir = os.path.abspath(os.path.join(paths.models_path, "VAE"))
+            output_modelname = os.path.join(vae_dir, filename)
+        elif interp_method == "Extract Unet":
+            type = "Unet"
+            unet_dir = os.path.abspath(os.path.join(paths.models_path, "Stable-diffusion"))
+            output_modelname = os.path.join(unet_dir, filename)
+        else:
+            type = None
 
-            a = theta_0[key]
-            b = theta_1[key]
+        if type:
+            shared.state.textinfo = f"Saving to {output_modelname} ..."
 
-            # this enables merging an inpainting model (A) with another one (B);
-            # where normal model would have 4 channels, for latenst space, inpainting model would
-            # have another 4 channels for unmasked picture's latent space, plus one channel for mask, for a total of 9
-            if a.shape != b.shape and a.shape[0:1] + a.shape[2:] == b.shape[0:1] + b.shape[2:]:
-                if a.shape[1] == 4 and b.shape[1] == 9:
-                    raise RuntimeError("When merging inpainting model with a normal one, A must be the inpainting model.")
-                if a.shape[1] == 4 and b.shape[1] == 8:
-                    raise RuntimeError("When merging instruct-pix2pix model with a normal one, A must be the instruct-pix2pix model.")
+            safetensors.torch.save_file(theta_0, output_modelname, metadata=None)
 
-                if a.shape[1] == 8 and b.shape[1] == 4:#If we have an Instruct-Pix2Pix model...
-                    theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)#Merge only the vectors the models have in common.  Otherwise we get an error due to dimension mismatch.
-                    result_is_instruct_pix2pix_model = True
+            shared.state.textinfo = f"{type} saved to {output_modelname}"
+            shared.state.end()
+
+        #can't refresh UI VAE/TE list here, unless always update
+        # or different Merge button with altered outputs
+        # sd_vae.refresh_vae_list()
+        # refresh_models()
+
+        return [gr.Dropdown.update(), gr.Dropdown.update(), "Checkpoint saved to " + output_modelname]
+
+    if theta_1:
+        shared.state.textinfo = 'Merging A and B'
+        shared.state.sampling_steps = len(theta_0.keys())
+        for key in tqdm.tqdm(theta_0.keys()):
+            if key in theta_1 and 'model' in key:
+
+                if key in checkpoint_dict_skip_on_merge:
+                    continue
+
+                a = theta_0[key]
+                b = theta_1[key]
+
+                # this enables merging an inpainting model (A) with another one (B);
+                # where normal model would have 4 channels, for latent space, inpainting model would
+                # have another 4 channels for unmasked picture's latent space, plus one channel for mask, for a total of 9
+                if a.shape != b.shape and a.shape[0:1] + a.shape[2:] == b.shape[0:1] + b.shape[2:]:
+                    if a.shape[1] == 4 and b.shape[1] == 9:
+                        raise RuntimeError("When merging inpainting model with a normal one, A must be the inpainting model.")
+                    if a.shape[1] == 4 and b.shape[1] == 8:
+                        raise RuntimeError("When merging instruct-pix2pix model with a normal one, A must be the instruct-pix2pix model.")
+
+                    if a.shape[1] == 8 and b.shape[1] == 4:#If we have an Instruct-Pix2Pix model...
+                        theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)#Merge only the vectors the models have in common.  Otherwise we get an error due to dimension mismatch.
+                        result_is_instruct_pix2pix_model = True
+                    else:
+                        assert a.shape[1] == 9 and b.shape[1] == 4, f"Bad dimensions for merged layer {key}: A={a.shape}, B={b.shape}"
+                        theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)
+                        result_is_inpainting_model = True
                 else:
-                    assert a.shape[1] == 9 and b.shape[1] == 4, f"Bad dimensions for merged layer {key}: A={a.shape}, B={b.shape}"
-                    theta_0[key][:, 0:4, :, :] = theta_func2(a[:, 0:4, :, :], b, multiplier)
-                    result_is_inpainting_model = True
-            else:
-                theta_0[key] = theta_func2(a, b, multiplier)
+                    theta_0[key] = theta_func2(a, b, multiplier)
 
-            theta_0[key] = to_half(theta_0[key], save_as_half)
+            shared.state.sampling_step += 1
 
-        shared.state.sampling_step += 1
+        del theta_1
+    else:
+        shared.state.textinfo = 'Copying A'
 
-    del theta_1
-
-    bake_in_vae_filename = sd_vae.vae_dict.get(bake_in_vae, None)
-    if bake_in_vae_filename is not None:
-        print(f"Baking in VAE from {bake_in_vae_filename}")
-        shared.state.textinfo = 'Baking in VAE'
-        vae_dict = sd_vae.load_torch_file(bake_in_vae_filename)
+    if "None" not in bake_in_vae and "Built in" not in bake_in_vae:
+        shared.state.textinfo = f'Baking in VAE from {bake_in_vae}'
+        vae_dict = sd_vae.load_torch_file(sd_vae.vae_dict[bake_in_vae])
 
         for key in vae_dict.keys():
-            theta_0_key = 'first_stage_model.' + key
-            if theta_0_key in theta_0:
-                theta_0[theta_0_key] = to_half(vae_dict[key], save_as_half)
+            if not key.startswith("first_stage_model."):
+                theta_0_key = 'first_stage_model.' + key
+            else:
+                theta_0_key = key
+            theta_0[theta_0_key] = vae_dict[key]   # precision convert later
 
         del vae_dict
 
-    if save_as_half and not theta_func2:
-        for key in theta_0.keys():
-            theta_0[key] = to_half(theta_0[key], save_as_half)
+    # bake in text encoders - no key conversion
+    if bake_in_te != [] and "Built in" not in bake_in_te:
+        for te in bake_in_te:
+            shared.state.textinfo = f'Baking in Text encoder from {te}'
+            te_dict = sd_models.load_torch_file(module_list[te])
 
-    if discard_weights:
-        regex = re.compile(discard_weights)
-        for key in list(theta_0):
-            if re.search(regex, key):
-                theta_0.pop(key, None)
+            for key in te_dict.keys():
+                theta_0[key] = te_dict[key]     # precision convert later
+
+            del te_dict
+
+    saves = [0, save_u, 1, save_v, 2, save_t]
+    for save in saves:
+        if save != "None" and save != "No change":
+            match save:
+                case 0:
+                    regex = re.compile("model.diffusion_model.")    #   untested if this hits inpaint, pix2pix keys
+                case 1:
+                    regex = re.compile(r'\b(first_stage_model|vae)\.\b')
+                case 2:
+                    regex = re.compile(r'\b(text_model|conditioner\.embedders)\.\b')
+
+                case "bfloat16":
+                    for key in theta_0.keys():
+                        if re.search(regex, key):
+                            theta_0[key] = to_bfloat16(theta_0[key])
+                case "float16":
+                    for key in theta_0.keys():
+                        if re.search(regex, key):
+                            theta_0[key] = to_float16(theta_0[key])
+                case "fp8e4m3":
+                    for key in theta_0.keys():
+                        if re.search(regex, key):
+                            theta_0[key] = to_fp8e4m3(theta_0[key])
+                case "fp8e5m2":
+                    for key in theta_0.keys():
+                        if re.search(regex, key):
+                            theta_0[key] = to_fp8e5m2(theta_0[key])
+                case _:
+                    pass
 
     ckpt_dir = shared.cmd_opts.ckpt_dir or sd_models.model_path
 
     filename = filename_generator() if custom_name == '' else custom_name
     filename += ".inpainting" if result_is_inpainting_model else ""
     filename += ".instruct-pix2pix" if result_is_instruct_pix2pix_model else ""
-    filename += "." + checkpoint_format
+    filename += ".safetensors"
 
     output_modelname = os.path.join(ckpt_dir, filename)
 
     shared.state.nextjob()
-    shared.state.textinfo = "Saving"
-    print(f"Saving to {output_modelname}...")
+    shared.state.textinfo = f"Saving to {output_modelname} ..."
 
     metadata = {}
 
@@ -273,6 +406,7 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
         metadata["format"] = "pt"
 
     if save_metadata and add_merge_recipe:
+        save_as = f"Unet: {save_u}, VAE: {save_v}, Text encoder(s): {save_t}"
         merge_recipe = {
             "type": "webui", # indicate this model was merged with webui's built-in merger
             "primary_model_hash": primary_model_info.sha256,
@@ -280,10 +414,11 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
             "tertiary_model_hash": tertiary_model_info.sha256 if tertiary_model_info else None,
             "interp_method": interp_method,
             "multiplier": multiplier,
-            "save_as_half": save_as_half,
+            "save_as": save_as,
             "custom_name": custom_name,
             "config_source": config_source,
             "bake_in_vae": bake_in_vae,
+            "bake_in_te": bake_in_te,
             "discard_weights": discard_weights,
             "is_inpainting": result_is_inpainting_model,
             "is_instruct_pix2pix": result_is_instruct_pix2pix_model
@@ -310,11 +445,7 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
         metadata["sd_merge_recipe"] = json.dumps(merge_recipe)
         metadata["sd_merge_models"] = json.dumps(sd_merge_models)
 
-    _, extension = os.path.splitext(output_modelname)
-    if extension.lower() == ".safetensors":
-        safetensors.torch.save_file(theta_0, output_modelname, metadata=metadata if len(metadata)>0 else None)
-    else:
-        torch.save(theta_0, output_modelname)
+    safetensors.torch.save_file(theta_0, output_modelname, metadata=metadata if len(metadata)>0 else None)
 
     sd_models.list_models()
     created_model = next((ckpt for ckpt in sd_models.checkpoints_list.values() if ckpt.name == filename), None)
@@ -324,8 +455,8 @@ def run_modelmerger(id_task, primary_model_name, secondary_model_name, tertiary_
     # TODO inside create_config() sd_models_config.find_checkpoint_config_near_filename() is called which has been commented out
     #create_config(output_modelname, config_source, primary_model_info, secondary_model_info, tertiary_model_info)
 
-    print(f"Checkpoint saved to {output_modelname}.")
-    shared.state.textinfo = "Checkpoint saved"
+    shared.state.textinfo = f"Checkpoint saved to {output_modelname}"
     shared.state.end()
 
-    return [*[gr.Dropdown.update(choices=sd_models.checkpoint_tiles()) for _ in range(4)], "Checkpoint saved to " + output_modelname]
+    new_model_list = sd_models.checkpoint_tiles()
+    return [gr.Dropdown(value=model_names, choices=new_model_list), gr.Dropdown(choices=new_model_list), "Checkpoint saved to " + output_modelname]
