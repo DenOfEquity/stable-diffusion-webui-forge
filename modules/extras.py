@@ -12,6 +12,8 @@ from modules.ui_common import plaintext_to_html
 import gradio as gr
 import safetensors.torch
 from modules_forge.main_entry import module_list, refresh_models
+from backend.loader import replace_state_dict
+import huggingface_guess
 
 
 def run_pnginfo(image):
@@ -248,6 +250,20 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         shared.state.nextjob()
 
     theta_0 = load_model(primary_model_info.filename, "A")
+    
+    # need to know unet/transformer type to convert text encoders
+    sd15_test_key = "model.diffusion_model.output_blocks.10.0.emb_layers.1.bias"
+    sdxl_test_key = "model.diffusion_model.output_blocks.8.0.emb_layers.1.bias"
+    flux_test_key = "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale"
+
+    if sd15_test_key in theta_0:
+        unet_test_key = sd15_test_key
+    elif sdxl_test_key in theta_0:
+        unet_test_key = sdxl_test_key
+    elif flux_test_key in theta_0:
+        unet_test_key = flux_test_key
+    else:
+        unet_test_key = None
 
     if "Extract" in interp_method:
         filename = filename_generator() if custom_name == '' else custom_name
@@ -276,11 +292,6 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
 
             shared.state.textinfo = f"{type} saved to {output_modelname}"
             shared.state.end()
-
-        #can't refresh UI VAE/TE list here, unless always update
-        # or different Merge button with altered outputs
-        # sd_vae.refresh_vae_list()
-        # refresh_models()
 
         return [gr.Dropdown.update(), gr.Dropdown.update(), "Checkpoint saved to " + output_modelname]
 
@@ -321,29 +332,49 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
     else:
         shared.state.textinfo = 'Copying A'
 
+
+    guess = huggingface_guess.guess(theta_0)
+
+    # bake in vae
     if "None" not in bake_in_vae and "Built in" not in bake_in_vae:
         shared.state.textinfo = f'Baking in VAE from {bake_in_vae}'
         vae_dict = sd_vae.load_torch_file(sd_vae.vae_dict[bake_in_vae])
-
-        for key in vae_dict.keys():
-            if not key.startswith("first_stage_model."):
-                theta_0_key = 'first_stage_model.' + key
-            else:
-                theta_0_key = key
-            theta_0[theta_0_key] = vae_dict[key]   # precision convert later
-
+        
+        converted = {}
+        converted[unet_test_key] = [0.0]
+        converted = replace_state_dict (converted, vae_dict, guess)
+        converted.pop(unet_test_key)
         del vae_dict
 
-    # bake in text encoders - no key conversion
+        for key in converted.keys():
+            theta_0[key] = converted[key]   # precision convert later
+
+        del converted
+
+    # bake in text encoders
     if bake_in_te != [] and "Built in" not in bake_in_te:
         for te in bake_in_te:
             shared.state.textinfo = f'Baking in Text encoder from {te}'
             te_dict = sd_models.load_torch_file(module_list[te])
 
-            for key in te_dict.keys():
-                theta_0[key] = te_dict[key]     # precision convert later
-
+            converted = {}
+            converted[unet_test_key] = [0.0]
+            converted = replace_state_dict (converted, te_dict, guess)
+            converted.pop(unet_test_key)
             del te_dict
+
+            for key in converted.keys():
+                theta_0[key] = converted[key]     # precision convert later
+
+            del converted
+
+    if discard_weights:     # this is repeated from load_model() in case baking vae/te put unwanted keys back
+                            # for example, could have VAE decoder only by discarding "first_stage_model.encoder."
+                            # (but will then get warning about missing keys)
+        regex = re.compile(discard_weights)
+        for key in list(theta_0):
+            if re.search(regex, key):
+                theta_0.pop(key, None)
 
     saves = [0, save_u, 1, save_v, 2, save_t]
     for save in saves:
