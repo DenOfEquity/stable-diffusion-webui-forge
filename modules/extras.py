@@ -190,19 +190,19 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
             
         match strip:
             case 1:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders)\.\b')
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model)\.\b')
             case 2:
                 regex = re.compile(r'\b(first_stage_model|vae)\.\b')
             case 3:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|first_stage_model|vae)\.\b')
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|first_stage_model|vae)\.\b')
             case 4:
                 regex = re.compile(r'\b(model\.diffusion_model)\.\b')
             case 5:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|model\.diffusion_model)\.\b')
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|model\.diffusion_model)\.\b')
             case 6:
                 regex = re.compile(r'\b(first_stage_model|vae|model\.diffusion_model)\.\b')
             case 7:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|first_stage_model|vae|model\.diffusion_model)\.\b')
+                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|first_stage_model|vae|model\.diffusion_model)\.\b')
             case _:
                 pass
 
