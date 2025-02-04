@@ -179,32 +179,41 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         theta = sd_models.load_torch_file(filename)
 
         #   strip unwanted keys immediately - reduce memory use and processing
-
-        strip = 0
-        if (save_t == "None (remove)" or interp_method == "Extract Unet" or interp_method == "Extract VAE") and "Built in (A)" not in bake_in_te:
-            strip += 1
-        if (save_v == "None (remove)" or interp_method == "Extract Unet" or interp_method == "Extract Text encoder(s)") and bake_in_vae != "Built in (A)":
-            strip += 2
-        if save_u == "None (remove)" or interp_method == "Extract VAE" or interp_method == "Extract Text encoder(s)":
-            strip += 4
-            
-        match strip:
-            case 1:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model)\.\b')
-            case 2:
-                regex = re.compile(r'\b(first_stage_model|vae)\.\b')
-            case 3:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|first_stage_model|vae)\.\b')
-            case 4:
-                regex = re.compile(r'\b(model\.diffusion_model)\.\b')
-            case 5:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|model\.diffusion_model)\.\b')
-            case 6:
-                regex = re.compile(r'\b(first_stage_model|vae|model\.diffusion_model)\.\b')
-            case 7:
-                regex = re.compile(r'\b(text_model|conditioner\.embedders|cond_stage_model\.model|first_stage_model|vae|model\.diffusion_model)\.\b')
-            case _:
-                pass
+        if interp_method == "Extract Unet":
+            regex = re.compile(r'^(?!.*(model\.diffusion_model)\.)')
+            strip = 8
+        elif interp_method == "Extract VAE":
+            regex = re.compile(r'^(?!.*(first_stage_model|vae)\.)')
+            strip = 8
+        elif interp_method == "Extract Text encoder(s)":
+            regex = re.compile(r'^(?!.*(text_model|conditioner\.embedders|cond_stage_model)\.)')
+            strip = 8
+        else:
+            strip = 0
+            if save_t == "None (remove)":
+                strip += 1
+            if save_v == "None (remove)":
+                strip += 2
+            if save_u == "None (remove)":
+                strip += 4
+                
+            match strip:
+                case 1:
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model)\.')
+                case 2:
+                    regex = re.compile(r'(first_stage_model|vae)\.')
+                case 3:
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|first_stage_model|vae)\.')
+                case 4:
+                    regex = re.compile(r'(model\.diffusion_model)\.')
+                case 5:
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|model\.diffusion_model)\.')
+                case 6:
+                    regex = re.compile(r'(first_stage_model|vae|model\.diffusion_model)\.')
+                case 7:
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|first_stage_model|vae|model\.diffusion_model)\.')
+                case _:
+                    pass
 
         if strip > 0:
             for key in list(theta):
@@ -224,11 +233,13 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         return theta
 
     if theta_func2:
+        shared.state.textinfo = 'Loading B'
         theta_1 = load_model(secondary_model_info.filename, "B")
     else:
         theta_1 = None
 
     if theta_func1:
+        shared.state.textinfo = 'Loading C'
         theta_2 = load_model(tertiary_model_info.filename, "C")
 
         shared.state.textinfo = 'Merging B and C'
@@ -247,8 +258,9 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
             shared.state.sampling_step += 1
         del theta_2
 
-        shared.state.nextjob()
+    shared.state.nextjob()
 
+    shared.state.textinfo = 'Loading A'
     theta_0 = load_model(primary_model_info.filename, "A")
     
     # need to know unet/transformer type to convert text encoders
@@ -332,18 +344,24 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
     else:
         shared.state.textinfo = 'Copying A'
 
-
-    guess = huggingface_guess.guess(theta_0)
+    if save_u != "None (remove)":
+        guess = huggingface_guess.guess(theta_0)
+    else:
+        guess = None
 
     # bake in vae
-    if "None" not in bake_in_vae and "Built in" not in bake_in_vae:
+    if "" != bake_in_vae:
         shared.state.textinfo = f'Baking in VAE from {bake_in_vae}'
         vae_dict = sd_vae.load_torch_file(sd_vae.vae_dict[bake_in_vae])
         
-        converted = {}
-        converted[unet_test_key] = [0.0]
-        converted = replace_state_dict (converted, vae_dict, guess)
-        converted.pop(unet_test_key)
+        if guess:
+            converted = {}
+            converted[unet_test_key] = [0.0]
+            converted = replace_state_dict (converted, vae_dict, guess)
+            converted.pop(unet_test_key)
+        else:
+            converted = vae_dict
+
         del vae_dict
 
         for key in converted.keys():
@@ -352,15 +370,19 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         del converted
 
     # bake in text encoders
-    if bake_in_te != [] and "Built in" not in bake_in_te:
+    if bake_in_te and len(bake_in_te > 0):
         for te in bake_in_te:
             shared.state.textinfo = f'Baking in Text encoder from {te}'
             te_dict = sd_models.load_torch_file(module_list[te])
 
-            converted = {}
-            converted[unet_test_key] = [0.0]
-            converted = replace_state_dict (converted, te_dict, guess)
-            converted.pop(unet_test_key)
+            if guess:
+                converted = {}
+                converted[unet_test_key] = [0.0]
+                converted = replace_state_dict (converted, te_dict, guess)
+                converted.pop(unet_test_key)
+            else:
+                converted = te_dict
+
             del te_dict
 
             for key in converted.keys():

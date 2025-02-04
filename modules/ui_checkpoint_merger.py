@@ -46,8 +46,7 @@ class UiCheckpointMerger:
             if vae in te_list:
                 te_list.remove(vae)
 
-        vae_list = ["None", "Built in (A)"] + vae_list
-        te_list = ["Built in (A)"] + te_list
+        vae_list = [""] + vae_list
 
         if fromUI:
             return gr.Dropdown(choices=vae_list), gr.Dropdown(choices=te_list)
@@ -111,18 +110,18 @@ class UiCheckpointMerger:
                         self.interp_amount = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, label='Multiplier (M)', value=0.5, elem_id="modelmerger_interp_amount")
 
                     with FormRow():
+                        self.bake_in_vae = gr.Dropdown(choices=self.vae_list, value="", label="Bake in VAE", elem_id="modelmerger_bake_in_vae")
+                        self.bake_in_te = gr.Dropdown(choices=self.te_list, value=None, label="Bake in Text encoder(s)", elem_id="modelmerger_bake_in_te", multiselect=True, max_choices=3)
+
+                        self.refresh_buttonM = ToolButton(value=refresh_symbol, elem_id="modelmerger_refresh_vaete")
+                        self.refresh_buttonM.click(fn=UiCheckpointMerger.refresh_additional, inputs=None, outputs=[self.bake_in_vae, self.bake_in_te])
+
+                    with FormRow():
                         self.save_u = gr.Dropdown(label="Unet precision", choices=["None (remove)", "No change", "float32", "bfloat16", "float16", "fp8e4m3", "fp8e5m2"], value="float16")
                         self.save_v = gr.Dropdown(label="VAE precision", choices=["None (remove)", "No change", "float32", "bfloat16", "float16", "fp8e4m3", "fp8e5m2"], value="float16")
                         self.save_t = gr.Dropdown(label="Text encoder(s) precision", choices=["None (remove)", "No change", "float32", "bfloat16", "float16", "fp8e4m3", "fp8e5m2"], value="float16")
                         self.calc_fp32 = gr.Checkbox(value=False, label="Calculate merge in float32")
 # if want to save fp32, must also set calc_fp32 for non-fp32 models
-
-                    with FormRow():
-                        self.bake_in_vae = gr.Dropdown(choices=self.vae_list, value="None", label="Bake in VAE", elem_id="modelmerger_bake_in_vae")
-                        self.bake_in_te = gr.Dropdown(choices=self.te_list, value="[]", label="Bake in Text encoder(s)", elem_id="modelmerger_bake_in_te", multiselect=True, max_choices=3)
-
-                        self.refresh_buttonM = ToolButton(value=refresh_symbol, elem_id="modelmerger_refresh_vaete")
-                        self.refresh_buttonM.click(fn=UiCheckpointMerger.refresh_additional, inputs=None, outputs=[self.bake_in_vae, self.bake_in_te])
 
                     with FormRow():
                         self.discard_weights = gr.Textbox(value="", label="Discard weights with matching name", elem_id="modelmerger_discard_weights")
