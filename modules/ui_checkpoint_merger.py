@@ -12,9 +12,9 @@ def update_interp_description(value, choices):
         "None"                      : (1, "Allows for format conversion and VAE baking."),
         "Weighted sum"              : (2, "Requires two models: A and B. The result is calculated as A * (1 - M) + B * M"),
         "Add difference"            : (3, "Requires three models: A, B and C. The result is calculated as A + (B - C) * M"),
-        "Extract Unet"              : (1, "Takes one model (A) as input. Options below are not relevant."),
-        "Extract VAE"               : (1, "Takes one model (A) as input. Options below are not relevant."),
-        "Extract Text encoder(s)"   : (1, "Takes one model (A) as input. Options below are not relevant."),
+        "Extract Unet"              : (1, "Takes one model (A) as input. Only output name option is relevant."),
+        "Extract VAE"               : (1, "Takes one model (A) as input. Only output name option is relevant."),
+        "Extract Text encoder(s)"   : (1, "Takes one model (A) as input. Only output name option is relevant."),
     }
     
     description = interp_descriptions[value][1]
@@ -89,8 +89,15 @@ class UiCheckpointMerger:
                     btn_save_unet_forge.click(save_unet, inputs=textbox_file_name_forge, outputs=result_html)
                     btn_save_ckpt_forge.click(save_checkpoint, inputs=textbox_file_name_forge, outputs=result_html)
 
+# add checkbox to specifiy checkbox is vpred (add vpred key)
+# similar possible for cos? etc
+
             with gr.Row(equal_height=False):
                 with gr.Column(variant='compact'):
+                    with FormRow():
+                        self.interp_method = gr.Dropdown(choices=["None", "Extract Unet", "Extract VAE", "Extract Text encoder(s)", "Weighted sum", "Add difference"], value="None", label="Interpolation method / Function", elem_id="modelmerger_interp_method", info="Allows for format conversion and VAE baking.")
+                        self.custom_name = gr.Textbox(label="Custom output name", info="Optional", max_lines=1, elem_id="modelmerger_custom_name")
+
                     with FormRow(elem_id="modelmerger_models"):
                         self.model_names = gr.Dropdown(sd_models.checkpoint_tiles(), multiselect=True, max_choices=1, elem_id="modelmerger_model_names", label="Models (select in order: A; optional B, C)", value=[])
 
@@ -102,12 +109,9 @@ class UiCheckpointMerger:
                         self.refresh_button = ToolButton(value=refresh_symbol)
                         self.refresh_button.click(fn=refresh_checkpoints, inputs=None, outputs=[self.model_names])
                         
-                    self.custom_name = gr.Textbox(label="Custom output name (optional)", elem_id="modelmerger_custom_name")
+                    self.interp_method.change(fn=update_interp_description, inputs=[self.interp_method, self.model_names], outputs=[self.interp_method, self.model_names], show_progress=False)
 
-                    with FormRow():
-                        self.interp_method = gr.Dropdown(choices=["None", "Extract Unet", "Extract VAE", "Extract Text encoder(s)", "Weighted sum", "Add difference"], value="None", label="Interpolation method / Function", elem_id="modelmerger_interp_method", info="Allows for format conversion and VAE baking.")
-                        self.interp_method.change(fn=update_interp_description, inputs=[self.interp_method, self.model_names], outputs=[self.interp_method, self.model_names], show_progress=False)
-                        self.interp_amount = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, label='Multiplier (M)', value=0.5, elem_id="modelmerger_interp_amount")
+                    self.interp_amount = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, label='Multiplier (M)', value=0.5, elem_id="modelmerger_interp_amount")
 
                     with FormRow():
                         self.bake_in_vae = gr.Dropdown(choices=self.vae_list, value="", label="Bake in VAE", elem_id="modelmerger_bake_in_vae")

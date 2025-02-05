@@ -1,4 +1,5 @@
 import os
+import gc
 import re
 import shutil
 import json
@@ -91,8 +92,9 @@ def read_metadata(model_names):
 
     return json.dumps(metadata, indent=4, ensure_ascii=False)
 
-
+@torch.no_grad()
 def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, save_v, save_t, calc_fp32, custom_name, config_source, bake_in_vae, bake_in_te, discard_weights, save_metadata, add_merge_recipe, copy_metadata_fields, metadata_json):
+    
     shared.state.begin(job="model-merge")
 
     if len(model_names) > 2:
@@ -154,6 +156,12 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
     }
     filename_generator, theta_func1, theta_func2 = theta_funcs[interp_method]
     shared.state.job_count = (1 if theta_func1 else 0) + (1 if theta_func2 else 0)
+    if (save_u != "None (remove)" and save_u != "No change"):
+        shared.state.job_count += 1
+    if (save_v != "None (remove)" and save_v != "No change"):
+        shared.state.job_count += 1
+    if (save_t != "None (remove)" and save_t != "No change"):
+        shared.state.job_count += 1
 
     if not primary_model_name:
         return fail("Failed: Merging requires a primary model.")
@@ -190,9 +198,9 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
             strip = 8
         else:
             strip = 0
-            if save_t == "None (remove)":
+            if save_t == "None (remove)" or (bake_in_te and len(bake_in_te) > 0):
                 strip += 1
-            if save_v == "None (remove)":
+            if save_v == "None (remove)" or (bake_in_vae != ""):
                 strip += 2
             if save_u == "None (remove)":
                 strip += 4
@@ -218,13 +226,13 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         if strip > 0:
             for key in list(theta):
                 if re.search(regex, key):
-                    theta.pop(key, None)
+                    theta.pop(key)
 
         if discard_weights:
             regex = re.compile(discard_weights)
             for key in list(theta):
                 if re.search(regex, key):
-                    theta.pop(key, None)
+                    theta.pop(key)
 
         if calc_fp32:
             for k,v in theta.items():
@@ -243,22 +251,19 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         theta_2 = load_model(tertiary_model_info.filename, "C")
 
         shared.state.textinfo = 'Merging B and C'
-        shared.state.sampling_steps = len(theta_1.keys())
-        for key in tqdm.tqdm(theta_1.keys()):
+        for key in theta_1.keys():
             if key in checkpoint_dict_skip_on_merge:
                 continue
 
             if 'model' in key:
                 if key in theta_2:
-                    t2 = theta_2.get(key, torch.zeros_like(theta_1[key]))
+                    t2 = theta_2.pop(key)   # .get(key, torch.zeros_like(theta_1[key]))
                     theta_1[key] = theta_func1(theta_1[key], t2)
                 else:
                     theta_1[key] = torch.zeros_like(theta_1[key])
 
-            shared.state.sampling_step += 1
         del theta_2
-
-    shared.state.nextjob()
+        shared.state.nextjob()
 
     shared.state.textinfo = 'Loading A'
     theta_0 = load_model(primary_model_info.filename, "A")
@@ -309,15 +314,14 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
 
     if theta_1:
         shared.state.textinfo = 'Merging A and B'
-        shared.state.sampling_steps = len(theta_0.keys())
-        for key in tqdm.tqdm(theta_0.keys()):
-            if key in theta_1 and 'model' in key:
+        for key in theta_0.keys():
+            if 'model' in key and key in theta_1:
 
                 if key in checkpoint_dict_skip_on_merge:
                     continue
 
                 a = theta_0[key]
-                b = theta_1[key]
+                b = theta_1.pop(key)
 
                 # this enables merging an inpainting model (A) with another one (B);
                 # where normal model would have 4 channels, for latent space, inpainting model would
@@ -338,9 +342,8 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
                 else:
                     theta_0[key] = theta_func2(a, b, multiplier)
 
-            shared.state.sampling_step += 1
-
         del theta_1
+        shared.state.nextjob()
     else:
         shared.state.textinfo = 'Copying A'
 
@@ -370,7 +373,7 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         del converted
 
     # bake in text encoders
-    if bake_in_te and len(bake_in_te > 0):
+    if bake_in_te and len(bake_in_te) > 0:
         for te in bake_in_te:
             shared.state.textinfo = f'Baking in Text encoder from {te}'
             te_dict = sd_models.load_torch_file(module_list[te])
@@ -396,8 +399,9 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         regex = re.compile(discard_weights)
         for key in list(theta_0):
             if re.search(regex, key):
-                theta_0.pop(key, None)
+                theta_0.pop(key)
 
+    shared.state.textinfo = 'Converting keys to selected dtypes'
     saves = [0, save_u, 1, save_v, 2, save_t]
     for save in saves:
         if save != "None" and save != "No change":
@@ -425,8 +429,15 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
                     for key in theta_0.keys():
                         if re.search(regex, key):
                             theta_0[key] = to_fp8e5m2(theta_0[key])
+                case "None (remove)":
+                    for key in theta_0.keys():
+                        if re.search(regex, key):
+                            theta_0.pop(key)
                 case _:
                     pass
+
+            shared.state.nextjob()
+
 
     ckpt_dir = shared.cmd_opts.ckpt_dir or sd_models.model_path
 
@@ -437,7 +448,6 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
 
     output_modelname = os.path.join(ckpt_dir, filename)
 
-    shared.state.nextjob()
     shared.state.textinfo = f"Saving to {output_modelname} ..."
 
     metadata = {}
@@ -497,6 +507,9 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
 
         metadata["sd_merge_recipe"] = json.dumps(merge_recipe)
         metadata["sd_merge_models"] = json.dumps(sd_merge_models)
+
+    gc.collect()
+    torch.cuda.empty_cache()
 
     safetensors.torch.save_file(theta_0, output_modelname, metadata=metadata if len(metadata)>0 else None)
 
