@@ -194,7 +194,7 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
             regex = re.compile(r'^(?!.*(first_stage_model|vae)\.)')
             strip = 8
         elif interp_method == "Extract Text encoder(s)":
-            regex = re.compile(r'^(?!.*(text_model|conditioner\.embedders|cond_stage_model)\.)')
+            regex = re.compile(r'^(?!.*(text_model|conditioner\.embedders|cond_stage_model|text_encoders\.t5xxl)\.)')
             strip = 8
         else:
             strip = 0
@@ -207,19 +207,19 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
                 
             match strip:
                 case 1:
-                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model)\.')
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|text_encoders\.t5xxl)\.')
                 case 2:
                     regex = re.compile(r'(first_stage_model|vae)\.')
                 case 3:
-                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|first_stage_model|vae)\.')
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|text_encoders\.t5xxl|first_stage_model|vae)\.')
                 case 4:
                     regex = re.compile(r'(model\.diffusion_model)\.')
                 case 5:
-                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|model\.diffusion_model)\.')
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|text_encoders\.t5xxl|model\.diffusion_model)\.')
                 case 6:
                     regex = re.compile(r'(first_stage_model|vae|model\.diffusion_model)\.')
                 case 7:
-                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|first_stage_model|vae|model\.diffusion_model)\.')
+                    regex = re.compile(r'(text_model|conditioner\.embedders|cond_stage_model|text_encoders\.t5xxl|first_stage_model|vae|model\.diffusion_model)\.')
                 case _:
                     pass
 
