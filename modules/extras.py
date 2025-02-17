@@ -156,6 +156,12 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
     }
     filename_generator, theta_func1, theta_func2 = theta_funcs[interp_method]
     shared.state.job_count = (1 if theta_func1 else 0) + (1 if theta_func2 else 0)
+    
+    if bake_in_vae != "":
+        shared.state.job_count += 1
+    if bake_in_te != []:
+        shared.state.job_count += 1
+    
     if (save_u != "None (remove)" and save_u != "No change"):
         shared.state.job_count += 1
     if (save_v != "None (remove)" and save_v != "No change"):
@@ -198,7 +204,7 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
             strip = 8
         else:
             strip = 0
-            if save_t == "None (remove)" or (bake_in_te and len(bake_in_te) > 0):
+            if save_t == "None (remove)" or (bake_in_te != []):
                 strip += 1
             if save_v == "None (remove)" or (bake_in_vae != ""):
                 strip += 2
@@ -268,20 +274,6 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
     shared.state.textinfo = 'Loading A'
     theta_0 = load_model(primary_model_info.filename, "A")
     
-    # need to know unet/transformer type to convert text encoders
-    sd15_test_key = "model.diffusion_model.output_blocks.10.0.emb_layers.1.bias"
-    sdxl_test_key = "model.diffusion_model.output_blocks.8.0.emb_layers.1.bias"
-    flux_test_key = "model.diffusion_model.double_blocks.0.img_attn.norm.key_norm.scale"
-
-    if sd15_test_key in theta_0:
-        unet_test_key = sd15_test_key
-    elif sdxl_test_key in theta_0:
-        unet_test_key = sdxl_test_key
-    elif flux_test_key in theta_0:
-        unet_test_key = flux_test_key
-    else:
-        unet_test_key = None
-
     if "Extract" in interp_method:
         filename = filename_generator() if custom_name == '' else custom_name
         filename += ".safetensors"
@@ -358,40 +350,30 @@ def run_modelmerger(id_task, model_names, interp_method, multiplier, save_u, sav
         vae_dict = sd_vae.load_torch_file(sd_vae.vae_dict[bake_in_vae])
         
         if guess:
-            converted = {}
-            converted[unet_test_key] = [0.0]
-            converted = replace_state_dict (converted, vae_dict, guess)
-            converted.pop(unet_test_key)
+            theta_0 = replace_state_dict (theta_0, vae_dict, guess)
         else:
-            converted = vae_dict
+            for key in vae_dict.keys():
+                theta_0[key] = vae_dict[key]   # precision convert later
 
         del vae_dict
 
-        for key in converted.keys():
-            theta_0[key] = converted[key]   # precision convert later
-
-        del converted
+        shared.state.nextjob()
 
     # bake in text encoders
-    if bake_in_te and len(bake_in_te) > 0:
+    if bake_in_te != []:
         for te in bake_in_te:
             shared.state.textinfo = f'Baking in Text encoder from {te}'
             te_dict = sd_models.load_torch_file(module_list[te])
 
             if guess:
-                converted = {}
-                converted[unet_test_key] = [0.0]
-                converted = replace_state_dict (converted, te_dict, guess)
-                converted.pop(unet_test_key)
+                theta_0 = replace_state_dict (theta_0, te_dict, guess)
             else:
-                converted = te_dict
+                for key in te_dict.keys():
+                    theta_0[key] = te_dict[key]     # precision convert later
 
             del te_dict
 
-            for key in converted.keys():
-                theta_0[key] = converted[key]     # precision convert later
-
-            del converted
+        shared.state.nextjob()
 
     if discard_weights:     # this is repeated from load_model() in case baking vae/te put unwanted keys back
                             # for example, could have VAE decoder only by discarding "first_stage_model.encoder."

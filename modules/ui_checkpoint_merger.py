@@ -115,7 +115,7 @@ class UiCheckpointMerger:
 
                     with FormRow():
                         self.bake_in_vae = gr.Dropdown(choices=self.vae_list, value="", label="Bake in VAE", elem_id="modelmerger_bake_in_vae")
-                        self.bake_in_te = gr.Dropdown(choices=self.te_list, value=None, label="Bake in Text encoder(s)", elem_id="modelmerger_bake_in_te", multiselect=True, max_choices=3)
+                        self.bake_in_te = gr.Dropdown(choices=self.te_list, value=[], label="Bake in Text encoder(s)", elem_id="modelmerger_bake_in_te", multiselect=True, max_choices=3)
 
                         self.refresh_buttonM = ToolButton(value=refresh_symbol, elem_id="modelmerger_refresh_vaete")
                         self.refresh_buttonM.click(fn=UiCheckpointMerger.refresh_additional, inputs=None, outputs=[self.bake_in_vae, self.bake_in_te])
